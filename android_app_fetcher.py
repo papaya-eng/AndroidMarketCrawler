@@ -1,34 +1,52 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-
-import os
 import re
 import urllib
 import simplejson as json
 import sys
-import urllib2
-
-# using PyQuery for querying retrieved HTML content using CSS3
-# selectors (awesome!)
+import httplib2
 from pyquery import pyquery as pq
 
 from datetime import datetime
+
 
 class AndroidAppFetcher(object):
     '''
     Fetcher of a single app.
     '''
-    urllib = urllib2
-    
-    def __init__(self, url, lang='en'):
+
+    def __init__(self, url, lang='en',
+                 proxy_host=None, proxy_port=None, proxy_type=None):
         '''
         lang is used to specify the result language of the crawler.
+        proxy_type may be of following values
+            httplib2.socks.PROXY_TYPE_HTTP
+            httplib2.socks.PROXY_TYPE_SOCKS4
         '''
         self.url = url
-        self.browser = self.urllib.build_opener()
-        self.browser.addheaders.append(('Cookie', 'hlSession2=%s'%lang))
+        self.lang = lang
+        self.proxy_host = proxy_host
+        self.proxy_port = proxy_port
+        self.proxy_type = proxy_type
         self.app_info = None
         self.all_links = []
+
+    def url_fetch(self):
+        '''
+        Fecth the url content.
+        '''
+        http = httplib2.Http()
+
+        if self.proxy_host:
+            proxy = httplib2.ProxyInfo(self.proxy_type,
+                                       self.proxy_host,
+                                       self.proxy_port,
+                                       proxy_rdns=True)
+            http.proxy_info=proxy
+
+        headers = {'Cookie': 'hlSession2=%s' % self.lang}
+        response, content = http.request(self.url, headers=headers)
+        return response, content
 
     def fetch_content(self):
         """
@@ -42,20 +60,13 @@ class AndroidAppFetcher(object):
         parent and trouble may arise.
         """
         try:
-            resp = self.browser.open(self.url)
+            response, content = self.url_fetch()
+        except Exception, ex:
+            raise Exception, ex
 
-        except urllib2.HTTPError, ex:
-            # silently ignores errors, even though the script will not
-            # block here.
-            if ex.code == 404: 
-                return
+        if response['status'] != '200':
+            return
 
-            # this is a slight problem, it shouldn't happen but it
-            # does sometimes, so keeping tracking is useful to see how
-            # often it does happen
-            raise urllib2.HTTPError, ex
-
-        content = resp.read()
         self.doc = pq.PyQuery(content.decode('utf-8'))
 
         # we must do our best to ignore pages that are not
@@ -156,9 +167,14 @@ class AndroidAppFetcher(object):
             'date_published': datetime.strptime(self.doc('[itemprop=datePublished]').text(),'%B %d, %Y').strftime('%Y-%m-%d'),
             'rating_count': int(re.sub(r'\D+', '', self.doc('[itemprop=ratingCount]').text() or '0')),
             'rating_value': self.doc('[itemprop=ratingValue]').attr['content'],
+            'version':  self.doc('[itemprop=softwareVersion]').text(),
+            'size': self.doc('[itemprop=fileSize]').text(),
+            'content_rating': self.doc('[itemprop=contentRating]').text(),
             'description_html': self.doc('#doc-original-text').html(),
+            'whatsnew_html': self.doc('#details-tab-3').html(),
+            'permissions': self.doc('#details-tab-4').html(),
             'more-from-developer': [
-                self.query_vars(a.attrib['href'])['id'] 
+                self.query_vars(a.attrib['href'])['id']
                 for a in self.doc('[data-analyticsid=more-from-developer] a.common-snippet-title')
             ],
             'users_also_installed': [
@@ -172,7 +188,7 @@ class AndroidAppFetcher(object):
             'icon_link': self.doc('.doc-banner-icon img').attr('src'),
             'screenshot_links': [ a.get('src') for a in self.doc('.screenshot-carousel-content-container img') ],
             'banner_link': self.doc('.doc-banner-image-container img').attr('src'),
-            
+            'updated': self.doc('[itemprop=datePublished]').text()
         }
 
         match = re.findall(r'.*[\d\.]+', self.doc('.buy-button-price').text())
